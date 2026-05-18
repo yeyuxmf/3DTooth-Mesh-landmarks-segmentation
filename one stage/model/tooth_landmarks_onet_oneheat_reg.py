@@ -345,39 +345,7 @@ class LocalLandmarkPredictor(nn.Module):
             nn.Conv1d(self.dim * 4, 1, kernel_size=1))
 
     def forward(self, local_crops):
-        # local_crops: (B * max_teeth, in_channels, K)
-        x_stem = self.stem(local_crops)
-
-        # 在特征空间动态提取局部邻域特征
-        x_edge1, idx1 = self.edge_conv1(x_stem)
-        x_edge2, idx2 = self.edge_conv2(x_edge1, idx=idx1)
-
-        # 聚合 EdgeConv 提取的局部表面特征
-        x_local = torch.cat([x_edge1, x_edge2], dim=1)
-        x_local = self.conv_fuse(x_local)
-
-        # 提取全局上下文并扩维
-        x_max = torch.max(x_local, dim=-1, keepdim=True)[0]
-        x_avg = torch.mean(x_local, dim=-1, keepdim=True)
-        x_global_concat = torch.cat([x_max, x_avg], dim=1)
-        x_global = self.global_mlp(x_global_concat)
-        x_global_expand = x_global.repeat(1, 1, x_local.shape[-1])
-
-        # 将局部特征与全局特征拼接，供解码使用
-        x_feat = torch.cat([x_local, x_global_expand], dim=1)
-        x_feat = self.decoder(x_feat)
-
-        # 输出层预测
-        # 形状: (B*max_teeth, K, num_landmarks)
-        heatmap = torch.sigmoid(self.heatmap_head(x_feat)).permute(0, 2, 1)
-
-        # 形状: (B*max_teeth, K, num_landmarks*3) -> (B*max_teeth, K, num_landmarks, 3)
-        offset_raw = self.offset_head(x_feat).permute(0, 2, 1)
-        K_points = offset_raw.shape[1]
-        offset_raw = offset_raw.view(-1, K_points, self.num_landmarks, 3)
-
-        # 形状: (B*max_teeth, K) 局部牙齿的二分类概率蒙版
-        seg_mask = torch.sigmoid(self.seg_head(x_feat)).squeeze(1)
+       
 
         return heatmap, offset_raw, seg_mask
 
