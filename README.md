@@ -1,4 +1,8 @@
+# Introduction
 Tooth Segmentation and Landmark Localization in 3D Dental Mesh，Pytorch
+1. "The first category relies on segmentation, localization, or detection techniques to isolate local tooth regions, followed by localized landmark localization or fine-grained segmentation within these individual areas."
+
+2. "The second category directly performs global tooth landmark localization on the dental data, achieving end-to-end predictions without relying on any prior segmentation or detection stages."
 
 
 
