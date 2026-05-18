@@ -1,3 +1,32 @@
+Tooth Segmentation and Landmark Localization in 3D Dental Mesh，Pytorch
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 📄 License & Commercial Use Restriction
 This copy of the code is intended strictly for academic research purposes only.
 
