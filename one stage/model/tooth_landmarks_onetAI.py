@@ -159,46 +159,5 @@ class ToothLandmark(nn.Module):
             nn.Dropout(0.2),
             nn.Conv1d(self.dim * 4, classnums, kernel_size=1))
     def forward(self, x):
-        # x 预期输入 shape: (B, 3, N)
-        x = x.permute(0, 2, 1) #
-        batch_size = x.size(0)
-        num_points = x.size(2)
-        raw_pts = x  # 保存原始坐标用于 Skip-Connection
-
-        # --- 多尺度特征提取 (恢复部分动态图特性) ---
-        # 浅层提取几何特征（依赖空间KNN）
-        x1, idx1 = self.edge_conv1(x, idx=None)
-        x2, idx2 = self.edge_conv2(x1, idx=idx1)
-
-        # 深层提取语义特征（将 idx 置为 None，触发动态图根据高维特征重新寻找近邻）
-        x3, idx3 = self.edge_conv3(x2, idx=None)
-        x4, _ = self.edge_conv4(x3, idx=idx3)
-
-        # 拼接多尺度局部特征: (B, 704, N)
-        local_features = torch.cat((x1, x2, x3, x4), dim=1)
-
-        # --- 提取双重全局特征 (Dual Global Context) ---
-        high_level_feat = self.agg_conv(local_features)  # (B, 1024, N)
-
-        # 1. Max Pooling (显著特征)
-        global_max = high_level_feat.max(dim=-1, keepdim=True)[0]  # (B, 1024, 1)
-        # 2. Avg Pooling (分布特征)
-        global_avg = high_level_feat.mean(dim=-1, keepdim=True) # (B, 1024, 1)
-
-        global_feature = torch.cat([global_max, global_avg], dim=1)  # (B, 2048, 1)
-        global_feature = global_feature.repeat(1, 1, num_points)  # (B, 2048, N)
-
-        # --- 最终特征融合 (Global + Local + Raw Coordinates) ---
-        # 融合维度: 2048 + 704 + 3 = 2755
-        final_features = torch.cat((global_feature, local_features, raw_pts), dim=1)
-
-        # 降维回 1024 并应用注意力机制
-        final_features = self.conv7(final_features)  # (B, 1024, N)
-        final_features = self.attention(final_features)
-
-        # --- 输出预测 ---
-        heatmap = torch.sigmoid(self.heatmap_head1(final_features)).permute(0, 2, 1)  # (B, N, C)
-        offset = self.offset_head1(final_features).permute(0, 2, 1)
-        offset = offset.reshape(batch_size, num_points, -1, 3)  # (B, N, C, 3)
-        cls = torch.sigmoid(self.class_t(final_features).permute(0, 2, 1))  # (B, N, C)
+  
         return heatmap, offset, cls
