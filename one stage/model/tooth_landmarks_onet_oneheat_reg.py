@@ -514,26 +514,7 @@ class TwoStageToothPipeline(nn.Module):
         )
 
     def forward(self, x):
-        raw_pos = x.clone()
-        B, N, _ = raw_pos.shape
-
-        heatmap, offset_raw, cls_scores, init_conf, init_land, shifted_pos_all, final_features = self.stage1(x)
-
-        scores = init_conf.squeeze(-1)
-
-        oland = init_land + shifted_pos_all
-        keep_idx = nms_3d(oland, scores, radius=3.0, max_keep=self.max_teeth)
-        final_centers = torch.gather(oland, 1, keep_idx.unsqueeze(-1).expand(-1, -1, 3))
-
-        crop_features, relative_pos = get_local_crops(
-            raw_pos,
-            final_features,
-            final_centers,
-            k=1536
-        )
-
-        # 修改了 stage 2 返回值以接收 seg_mask
-        twoheatmap, twooffset_raw, twoseg_mask = self.stage2_landmark_head(crop_features)
+  
 
 
         return heatmap, offset_raw, cls_scores, init_land, init_conf, shifted_pos_all,twoheatmap, twooffset_raw, twoseg_mask, final_centers, relative_pos
