@@ -113,32 +113,6 @@ class ToothLandmark(nn.Module):
             nn.Conv1d(self.dim * 4, classnums*3, kernel_size=1))
 
     def forward(self, x):
-        # x shape: (B, 3, N)
-        x = x.permute(0, 2, 1)
-        batch_size = x.size(0)
-        num_points = x.size(2)
 
-        # 多尺度特征提取
-        x1, idx = self.edge_conv1(x, idx=None)  # (B, 64, N)
-        x2, idx = self.edge_conv2(x1, idx=idx)  # (B, 64, N)
-        x3, idx = self.edge_conv3(x2, idx=idx)  # (B, 128, N)
-        x4, idx = self.edge_conv4(x3, idx=idx)  # (B, 128, N)
-
-        # 拼接多尺度局部特征
-        local_features = torch.cat((x1, x2, x3, x4), dim=1)  # (B, 384, N)
-
-        # 提取全局特征
-        combined = self.agg_conv(local_features)  # (B, 1024, N)
-        global_feature = combined.max(dim=-1, keepdim=True)[0]  # (B, 1024, 1)
-        global_feature = global_feature.repeat(1, 1, num_points)  # (B, 1024, N)
-
-        # 最终特征融合 (Global + Local)
-        final_features = torch.cat((global_feature, local_features), dim=1)  # (B, 1408, N)
-        final_features = self.conv7(final_features)
-
-        # 输出预测
-        heatmap = torch.sigmoid(self.heatmap_head(final_features)).permute(0, 2, 1)  # (B, N, C)
-        offset = self.offset_head(final_features).permute(0, 2, 1)
-        offset = offset.reshape(batch_size, num_points, -1, 3)  # (B, N, C, 3)
 
         return heatmap, offset
