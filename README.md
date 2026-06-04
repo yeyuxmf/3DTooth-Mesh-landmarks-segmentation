@@ -15,6 +15,7 @@ python ./main.py
 
 paper 2 train：
 python ./main_cls.py    A pre-trained model is obtained after training.
+
 python ./main_reg.py    Load the pre-trained model obtained from training with main_cls.py, and then train it further to obtain the final model.
 
 # Environment
