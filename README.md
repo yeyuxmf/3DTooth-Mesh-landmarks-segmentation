@@ -8,9 +8,11 @@ Tooth Segmentation and Landmark Localization in 3D Dental Mesh，Pytorch
 # 一、Train 
 two_stage:
 python  main_seg_landmarks.py
+
 one_stage:
 paper 1 train：
 python ./main.py
+
 paper 2 train：
 python ./main_cls.py    A pre-trained model is obtained after training.
 python ./main_reg.py    Load the pre-trained model obtained from training with main_cls.py, and then train it further to obtain the final model.
