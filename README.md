@@ -18,11 +18,13 @@ two_stage:
 Use the trained tooth detection model to crop local regions of individual teeth from both the training and test sets, which are then fed to the tooth landmark regression model for training.
 
 python ./data/data_processing.py  #process data:
+
 python  ./main_seg_landmarks.py   
 
 one_stage:
 
 Obtain the training data for model training in Paper 2 and Paper 3.
+
 python ./data/data_process.py
 
 paper 1 train：
@@ -31,9 +33,9 @@ python ./main.py
 
 paper 2 train：
 
-python ./main_cls.py    A pre-trained model is obtained after training.
+python ./main_cls.py    #A pre-trained model is obtained after training.
 
-python ./main_reg.py    Load the pre-trained model obtained from training with main_cls.py, and then train it further to obtain the final model.
+python ./main_reg.py    #Load the pre-trained model obtained from training with main_cls.py, and then train it further to obtain the final model.
 
 # Environment
 
