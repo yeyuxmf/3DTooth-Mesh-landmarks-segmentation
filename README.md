@@ -8,7 +8,7 @@ Tooth Segmentation and Landmark Localization in 3D Dental Mesh，Pytorch
 # 一、Train 
 two_stage:
 
-python  main_seg_landmarks.py
+python  ./main_seg_landmarks.py
 
 one_stage:
 
