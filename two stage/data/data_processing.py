@@ -1,380 +1,478 @@
 import os
+import time
+import vtk
 import json
-import random
+import cv2
 import trimesh
+from torchvision.ops import nms
 import numpy as np
 import torch
-from data.util import walkFileType, walkFile, data_ori_align, sindata_rot_trans
+from scipy.optimize import linear_sum_assignment
+from scipy.spatial.distance import cdist
+from utils.general import non_max_suppression
+from tooth_utils import read_teeth_mask, mapping_point_clound_ellipse, test_mapping_point_clound_ellipse
+from tooth_utils import FileErgodic, get_data_to_mesh
+from signal_tooth_split import view_row_key_point
+from data.tooth_number_postprocess import toothNumberingCorrection
+color_dict = {
+        0: [255, 0, 0],     # 鲜红
+        8: [0, 255, 0],     # 翠绿
+        7: [0, 0, 255],     # 纯蓝
+        6: [255, 255, 0],   # 亮黄
+        5: [255, 0, 255],   # 品红
+        4: [0, 255, 255],   # 青色
+        3: [255, 165, 0],   # 橙色
+        2: [0, 32, 240],    # 紫色 (修正为更亮的紫)
+        1: [255, 12, 0],  # 紫色 (修正为更亮的紫)
+
+    9: [0, 255, 0],  # 翠绿
+    10: [0, 0, 255],  # 纯蓝
+    11: [255, 255, 0],  # 亮黄
+    12: [255, 0, 255],  # 品红
+    13: [0, 255, 255],  # 青色
+    14: [255, 165, 0],  # 橙色
+    15: [160, 32, 240],  # 紫色 (修正为更亮的紫)
+    16: [255, 12, 0]  # 紫色 (修正为更亮的紫)
+    }
 
 
-kp_color_map = {
-    "Mesial": [0, 0, 139, 255], "Distal": [135, 206, 235, 255],
-    "Cusp": [255, 255, 0, 255], "InnerPoint": [255, 255, 255, 255],
-    "OuterPoint": [255, 182, 193, 255], "FacialPoint": [255, 165, 0, 255]
-}
+def write_data(data_path, label, color_space, save_dapth):
 
-tooth_key = { 1: ['Mesial', 'Distal', 'Cusp', 'InnerPoint', 'OuterPoint', 'FacialPoint'],
-              2: ['Mesial', 'Distal', 'Cusp', 'InnerPoint', 'OuterPoint', 'FacialPoint'],
-              3: ['Mesial', 'Distal', 'Cusp', 'InnerPoint', 'OuterPoint', 'FacialPoint'],
-              4: ['Mesial', 'Distal', 'Cusp', 'InnerPoint', 'OuterPoint', 'FacialPoint'],
-              5: ['Mesial', 'Distal', 'Cusp', 'InnerPoint', 'OuterPoint', 'FacialPoint'],
-              6: ['Mesial', 'Distal', 'InnerPoint', 'OuterPoint', 'FacialPoint'],
-              7: ['Mesial', 'Distal', 'InnerPoint', 'OuterPoint', 'FacialPoint'],
-              8: ['Mesial', 'Distal', 'InnerPoint', 'OuterPoint', 'FacialPoint'],
-              9: ['Mesial', 'Distal', 'InnerPoint', 'OuterPoint', 'FacialPoint'],
-             10: ['Mesial', 'Distal', 'InnerPoint', 'OuterPoint', 'FacialPoint'],
-             11: ['Mesial', 'Distal', 'InnerPoint', 'OuterPoint', 'FacialPoint'],
-             12: ['Mesial', 'Distal', 'Cusp', 'InnerPoint', 'OuterPoint', 'FacialPoint'],
-             13: ['Mesial', 'Distal', 'Cusp', 'InnerPoint', 'OuterPoint', 'FacialPoint'],
-             14: ['Mesial', 'Distal', 'Cusp', 'InnerPoint', 'OuterPoint', 'FacialPoint'],
-             15: ['Mesial', 'Distal', 'Cusp', 'InnerPoint', 'OuterPoint', 'FacialPoint'],
-             16: ['Mesial', 'Distal', 'Cusp', 'InnerPoint', 'OuterPoint', 'FacialPoint']
-     }
+    reader = vtk.vtkOBJReader()
+    reader.SetFileName(data_path)
+    reader.Update()
+    polydata = reader.GetOutput()
 
+    # 创建颜色数组
+    num_points = polydata.GetNumberOfPoints()
+    color_array = vtk.vtkUnsignedCharArray()
+    color_array.SetNumberOfComponents(3)  # RGB
+    color_array.SetName("Colors")  # 设置颜色数组的名称
 
+    # 将颜色值添加到颜色数组中
+    for i in range(num_points):
+        colors = color_space[int(label[i])]
+        r, g, b = colors[i]  # 获取每个顶点的 RGB 值
+        color_array.InsertNextTuple3(r, g, b)
 
+    # 将颜色数组添加到 polydata 中
+    polydata.GetPointData().SetScalars(color_array)
 
-def get_tooth_color(tooth_id):
-    # 使用牙齿编号作为随机种子，保证每次运行颜色一致
-    random.seed(int(tooth_id))
-    return [random.randint(50, 255) for _ in range(3)] + [255]
+    # 保存为 OBJ 文件
+    writer = vtk.vtkOBJWriter()
+    writer.SetFileName(save_dapth)
+    writer.SetInputData(polydata)
+    writer.Write()
 
 
-def get_files(file_dir, file_list, type_str):
+def write_obj(vec_points, vec_faces, label, color_space, save_path):
+    with open(save_path, "w") as file:
+        # 写入顶点和颜色
+        for pi in range(vec_points.shape[0]):
+            color = color_space[int(label[pi])]
+            point = vec_points[pi]
+            file.write(f"v {str(point[0])} {str(point[1])} {str(point[2])} {str(color[0])} {str(color[1])} {str(color[2])}\n")
 
-    for file_ in os.listdir(file_dir):
-        path = os.path.join(file_dir, file_)
-        if os.path.isdir(path):
-            get_files(path, file_list, type_str)
-        else:
-            if file_.rfind(type_str) !=-1:
-                file_list.append(path)
-
-
-
-def data_process():
-    file_path = "I:/mesh_tooth_data/pred_landmarks_data/train_data/"
-    file_list = []
-    get_files(file_path, file_list, "npy")
-
-    data_points= np.zeros((16, len(file_list)), np.int32)
-    for di in range(len(file_list)):
+        # 写入面
+        vec_faces = vec_faces + 1  # OBJ 文件索引从1开始
+        for fi in range(vec_faces.shape[0]):
+            face = vec_faces[fi]
+            file.write(f"f {str(face[0])} {str(face[1])} {str(face[2])}\n")
 
 
+def read_landmarks(file_path):
 
-        file_data = np.load(file_list[di], allow_pickle=True).item()
+    gtkey_points = {'Mesial': [], 'Distal': [], 'InnerPoint': [], 'OuterPoint': [], 'FacialPoint': [], 'Cusp': []}
+    annots = json.load(open(file_path))
+    landmarks = annots['objects']
+    for i, kp in enumerate(landmarks):
+        gtkey_points[kp["class"]].append(kp["coord"])
 
-        teeth_nums = []
-        teeth_points = []
-        for key in file_data:
-            teeth_nums.append(int(key))
-            landmarks = file_data[key][0]
-            teeth_points.append(np.array(file_data[key][1]))
-            data_points[int(key)-1, di] = len(landmarks)
-        teeth_nums = np.array(teeth_nums)
-        order_index = np.argsort(teeth_nums)
-        teeth_nums = teeth_nums[order_index]
-    print(data_points)
-
-    for i in  range(data_points.shape[0]):
-        print(set(data_points[i].tolist()))
+    return gtkey_points
 
 
-def read_data(file_list):
-
-    tooth_key = {}
-    tooth_data ={}
-
-    for ti in range(len(file_list)):
-        tid = os.path.basename(file_list[ti]).replace(".obj", "")
-        landmark_path = file_list[ti].replace("obj", "json")
-        if os.path.exists(landmark_path):
-
-            mesh = trimesh.load_mesh(file_list[ti])
-            with open(landmark_path, 'r', encoding='utf-8') as f:
-                feat_data = json.load(f)
-                key_point = {}
-                for i in range(len(feat_data)):
-                    key_point[i] = [feat_data[i]["class"], np.array(feat_data[i]["coord"])]
-
-            tid = 9-int(tid) if int(tid) <=8 else int(tid)
-            tooth_data[int(tid)] = [int(tid), key_point, mesh]
-            tooth_key[int(tid)] = key_point.keys()
-
-
-    print(tooth_key)
-    return [tooth_data]
-
-
-
-
-
-def toothMICCAI2022Data():
-    data_points = np.load("tooth_data.npy")
-    #
-    print(np.max(data_points, axis=1))
-
-
-    data_path = "H:/teethMICCAI2022/TLDETR_data/"
-
-    dir_list = []
-    walkFile(data_path, dir_list)
-
-    data_points = np.zeros((16, len(dir_list)), np.int32)
-    save_root = "H:/teethMICCAI2022/TLDETR_data_train/train/"
-    for di in range(90, len(dir_list), 1):
-        print(di, " ", dir_list[di])
-        folder_name = os.path.basename(dir_list[di])
-
-        file_list = []
-        get_files(dir_list[di], file_list, "obj")
-        tooth_data = read_data(file_list)
-
-        lower_data = tooth_data[0]
-
-        rot_matrix = data_ori_align(lower_data)
-        tooth_data, tooth_data_points, matrix = sindata_rot_trans(lower_data, rot_matrix)
-
-
-        np.save(save_root + folder_name + "_cv.npy", tooth_data_points)
-        # for ki, tid in enumerate(tooth_data):
-        #     tid, key_point, mesh = tooth_data[tid]
-        #     data_points[tid-1, di] = len(key_point)
-    # np.save("tooth_data.npy", data_points)
-
-    #print("")
-        # tooth_data = [tooth_data]
-        # for type_, t_data in enumerate(tooth_data):
-        #     visual_elements = []
-        #     for i, tid in enumerate(t_data):
-        #         tid, tooth_kp, mesh = t_data[tid]
-        #
-        #         visual_elements.append(mesh)
-        #         current_tooth_color = get_tooth_color(tid)
-        #         # 遍历该牙齿的所有关键点
-        #         # if "WALA" in tooth_kp:
-        #         #     del tooth_kp["WALA"]
-        #
-        #         for kp_i, kp_pos in tooth_kp.items():
-        #             kp_name = kp_pos[0]
-        #             kp_pos = kp_pos[1]
-        #             # 提取缩写，防止 kp_name 是 "MCP_1" 这种格式
-        #             short_name = kp_name.split("_")[0]
-        #
-        #             # 获取预定义颜色，如果没找到则默认使用白色
-        #             point_color = kp_color_map.get(short_name, [255, 255, 255, 255])
-        #
-        #             sphere = trimesh.creation.uv_sphere(radius=0.5)
-        #             sphere.visual.face_colors = point_color
-        #
-        #             # 平移并添加到 visual_elements
-        #             translation = np.eye(4)
-        #             translation[:3, 3] = kp_pos
-        #             sphere.apply_transform(translation)
-        #             visual_elements.append(sphere)
-        #
-        #             # 3. 打印调试信息（因为 trimesh 默认 viewer 很难直接在 3D 空间显示文字标签）
-        #             #print(f"Tooth {tid} - Landmark: {kp_name} at {kp_pos}")
-        #
-        #         # 创建场景并显示
-        #     scene = trimesh.Scene(visual_elements)
-        #     scene.camera.perspective = False
-        #
-        #     # 2. 设置正面视角
-        #     # 根据你的截图，牙齿的正面通常对应 (np.pi/2, 0, 0) 或者 (0, 0, 0)
-        #     # 我们使用 set_camera 自动计算距离，确保模型填满窗口
-        #     scene.set_camera(angles=(np.pi / 2, 0, 0), distance=100, center=scene.centroid-10)
-        #
-        #     scene.show()  # 这会打开一个交互式窗口
-
-
-def rand_select_train_data():
-    import random
-    import shutil
-    file_path = "E:/DataSet/mesh_tooth_landmark_data/Teeth3DS_data_train/train/"
-    file_list = []
-    get_files(file_path, file_list, ".npy")
-    random.shuffle(file_list)
-
-    save_root = "E:/DataSet/mesh_tooth_landmark_data/Teeth3DS_data_train/test/"
-    for i in range(40):
-
-        file_data = file_list[i]
-        end_name = os.path.split(file_data)[-1]
-        dst_path = save_root + end_name
-
-
-        shutil.move(file_data, dst_path)
-
-
-def farthest_point_sample_np(
-        points: np.ndarray,
-        K: int,
-        random_start: bool = True
-) -> np.ndarray:
-    # 1. 严格校验输入形状和参数
-    if points.ndim != 2 or points.shape[1] != 3:
-        raise ValueError(f"点云形状必须为 (N, 3)，当前输入形状为 {points.shape}")
-    N = points.shape[0]
-    if K > N:
-        raise ValueError(f"采样数K={K} 不能大于原始点数N={N}")
-    if K <= 0:
-        raise ValueError(f"采样数K={K} 必须为正整数")
-
-    # 2. 初始化：采样索引数组 + 最小距离数组
-    sampled_indices = np.zeros(K, dtype=np.int32)
-    # min_distances[i] = 点i到已选点集的最小距离（初始为无穷大）
-    min_distances = np.full(N, np.inf)
-
-    # 3. 选择第一个点
-    if random_start:
-        start_idx = np.random.randint(0, N)  # 随机选起始点
-    else:
-        start_idx = 0  # 固定选第一个点
-    sampled_indices[0] = start_idx
-
-    # 4. 核心迭代：逐次选择最远点（向量化加速）
-    for k in range(1, K):
-        # 获取上一轮选中的点 (3,)
-        last_selected = points[sampled_indices[k - 1]]
-        # 向量化计算所有点到上一轮选点的欧氏距离平方 (N,)
-        dist = np.sum((points - last_selected) ** 2, axis=1)
-        # 更新最小距离：取「当前距离」和「历史最小距离」的较小值
-        min_distances = np.minimum(min_distances, dist)
-        # 选择距离最大的点作为下一个采样点
-        sampled_indices[k] = np.argmax(min_distances)
-
-    return sampled_indices
-
-
-def farthest_point_sample_cuda(
-        points: torch.Tensor,
-        K: int,
-        random_start: bool = True
-) -> torch.Tensor:
+def compute_distance_matrix_numpy(point_clouds, landmarks):
     """
-    PyTorch CUDA 版最远点采样（FPS），适配 (N, 3) 点云，返回采样索引
-    核心：利用 CUDA 张量的向量化运算，全程在 GPU 上执行，无CPU/GPU数据拷贝
-
-    Args:
-        points: 点云张量，形状 (N, 3)，必须是 CUDA 张量（torch.float32/torch.float64）
-        K: 采样点数，满足 0 < K ≤ N
-        random_start: 是否随机选择起始点
-
-    Returns:
-        sampled_indices: 采样索引张量，形状 (K,)，CUDA 张量（torch.int32）
-
-    Raises:
-        ValueError: 输入形状/设备/参数不合法
+    point_clouds: (N, P, 3)
+    landmarks: (M, 3)
+    return: (N, M)
     """
-    # 1. 严格校验输入
-    if points.device.type != "cuda":
-        raise ValueError(f"点云必须是 CUDA 张量，当前设备：{points.device}")
-    if points.ndim != 2 or points.shape[1] != 3:
-        raise ValueError(f"点云形状必须为 (N, 3)，当前：{points.shape}")
+    # 扩展维度以进行广播
+    # (N, P, 1, 3) - (1, 1, M, 3) -> (N, P, M, 3)
+    # 通过这种方式，每个点云的每个点都与每个地标相减
+    diff = point_clouds[:, :, np.newaxis, :] - landmarks[np.newaxis, np.newaxis, :, :]
 
-    N = points.shape[0]
-    if K > N or K <= 0:
-        raise ValueError(f"采样数K={K} 必须满足 0 < K ≤ {N}")
+    # 计算欧式距离的平方 (省去开根号提高速度)
+    dist_sq = np.sum(diff ** 2, axis=-1)  # 结果维度 (N, P, M)
 
-    # 2. 初始化
-    device = points.device
-    sampled_indices = torch.zeros(K, dtype=torch.int32, device=device)
-    min_distances = torch.full((N,), float("inf"), device=device)  # 每个点到已选点集的最小距离
+    # 在 P 维度取最小值，得到每个点云离地标最近的点
+    min_dist_sq = np.min(dist_sq, axis=1)  # 结果维度 (N, M)
 
-    # 3. 选择第一个点
-    if random_start:
-        start_idx = torch.randint(0, N, (1,), device=device, dtype=torch.int32)
-    else:
-        start_idx = torch.tensor([0], dtype=torch.int32, device=device)
-    sampled_indices[0] = start_idx
-
-    # 4. 核心迭代（CUDA 加速）
-    for k in range(1, K):
-        # 获取上一轮选中的点 (3,)
-        last_selected = points[sampled_indices[k - 1]]
-        # 向量化计算所有点到上一轮选点的距离平方（CUDA 并行计算）
-        dist = torch.sum((points - last_selected) ** 2, dim=1)
-        # 更新最小距离
-        min_distances = torch.min(min_distances, dist)
-        # 选择距离最大的点（CUDA 并行查找）
-        sampled_indices[k] = torch.argmax(min_distances)
-
-    return sampled_indices.detach().cpu().numpy()
+    return np.sqrt(min_dist_sq)
 
 
-def farthestPointSampling():
+def visualize_teeth_with_keypoints(mesh, labels, keypoints_dict):
 
-    save_root = "E:/DataSet/mesh_tooth_landmark_data/seg_landmarks_train_data/train_farthest/"
 
-    file_path ="E:/DataSet/mesh_tooth_landmark_data/seg_landmarks_train_data/train/"
+    # 2. 给每颗牙齿上色 (labels: 0-16)
+    # 使用高对比度离散色板，labels 为 0 的背景设为浅灰
+    # 这里手动定义一个 17 色的色板
+    tooth_colors = np.array([
+        [128, 128, 128, 255],  # 0: 背景 (半透明浅灰)
+        [255, 127, 14, 255], [31, 119, 180, 255], [44, 160, 44, 255],
+        [214, 39, 40, 255], [148, 103, 189, 255], [140, 86, 75, 255],
+        [227, 119, 194, 255], [0, 127, 127, 255], [188, 189, 34, 255],
+        [23, 190, 207, 255], [174, 199, 232, 255], [255, 187, 120, 255],
+        [152, 223, 138, 255], [255, 152, 150, 255], [197, 176, 213, 255],
+        [196, 156, 148, 255]
+    ], dtype=np.uint8)
+
+    # 根据顶点 labels 赋值颜色
+    mesh.visual.vertex_colors = tooth_colors[labels]
+
+    # 3. 关键点类型颜色映射 (RGB + CMY，对人眼最敏感)
+    # 这样你一眼就能分清 Mesial 和 Distal
+    kp_type_colors = {
+        'Mesial': [255, 0, 0, 255],  # 红色
+        'Distal': [0, 255, 0, 255],  # 绿色
+        'Cusp': [0, 255, 255, 255],  # 青色
+        'InnerPoint': [0, 0, 255, 255],  # 蓝色
+        'OuterPoint': [255, 255, 0, 255],  # 黄色
+        'FacialPoint': [255, 0, 255, 255],  # 品红
+    }
+
+    visual_elements = [mesh]
+
+    # 4. 处理 keypoints_dict
+    # 遍历字典中的每一个关键点类型
+    for kp_type, points in keypoints_dict.items():
+        # 获取该类型对应的颜色
+        color = kp_type_colors.get(kp_type, [255, 255, 255, 255])
+
+        for pt in points:
+            # 创建表示关键点的小球
+            sphere = trimesh.creation.uv_sphere(radius=0.5)
+            sphere.visual.face_colors = color
+
+            # 移动到关键点坐标
+            translation = np.eye(4)
+            translation[:3, 3] = pt
+            sphere.apply_transform(translation)
+
+            visual_elements.append(sphere)
+
+    # 5. 显示
+    scene = trimesh.Scene(visual_elements)
+    scene.bg_color = [128, 128, 128, 255]
+    print("可视化就绪：牙齿按 Label 染色，关键点按类型染色。")
+    scene.show()
+
+
+
+def train_data(
+    conf_thres=0.1,  # confidence threshold
+    iou_thres=0.6,  # NMS IoU threshold
+    max_det=300,  # maximum detections per image
+    single_cls=False,  # treat as single-class dataset
+):
+
+    keypoint_path = 'G:/teethMICCAI2022/3DTeethLand_landmarks_train/'
+    keyp_list =[]
+    FileErgodic(keypoint_path, keyp_list, ".json")
+    mesh_dict = {}
+    for mesh_file in keyp_list:
+        mesh_name = os.path.basename(mesh_file).replace("__kpt.json", "")
+        mesh_dict[mesh_name] = mesh_file
+
+
+    file_path = "H:/teethMICCAI2022/raw_data/train/"
     file_list = []
-    get_files(file_path, file_list, ".npy")
-    for i in range(0, len(file_list)):
+    FileErgodic(file_path, file_list, ".obj")
 
-        file_path = file_list[i]
-        data_name = os.path.basename(file_path).replace("_cv1.npy", "")
+    # Load model
+    model = torch.jit.load('../save_model/best.torchscript').cuda().eval()
 
-        file_data = np.load(file_path, allow_pickle=True).item()
+    imgsz = 512
+    # Configure
+    model.eval()
+    model3D = torch.jit.load('../save_model/tooth3D.pt')
+    model3D.cuda().eval()
 
-        for key in file_data:
-            landmarks_ = file_data[key]["key_point"]
-            mesh_points = np.array(file_data[key]["points"])[..., :3]
-            mesh_points = mesh_points.astype(np.float32)
-            #mesh_points = torch.tensor(mesh_points).cuda().float()
-            if mesh_points.shape[0]>=256:
-                sindices1 = farthest_point_sample_np(points=mesh_points,K=256, random_start=True)
-            else:
-                sindices1 = np.random.randint(0, mesh_points.shape[0], 256)
+    save_rooth = "H:/teethMICCAI2022/seg_landmarks_train_data/train_seg_land/"
+    Toothmask= np.zeros((len(file_list), 9))
+    for di in range(0, len(file_list)):
+        #file_list[di] = "H:/teethMICCAI2022/raw_data/train/data_part_3/lower/01A6HAN6/01A6HAN6_lower.obj"
+        tic = time.time()
 
-            if mesh_points.shape[0]>=512:
-                sindices2 = farthest_point_sample_np(points=mesh_points,K=512, random_start=True)
-            else:
-                sindices2 = np.random.randint(0, mesh_points.shape[0], 512)
+        gt_label_dict, pred_label_dict = {}, {}
+        print(di, "   ", file_list[di])
+        data_name = os.path.split(file_list[di])[-1].replace(".obj", "")
 
-            if mesh_points.shape[0]>=1024:
-                sindices3 = farthest_point_sample_np(points=mesh_points,K=1024, random_start=True)
-            else:
-                sindices3 = np.random.randint(0, mesh_points.shape[0], 1024)
+        if data_name not in mesh_dict:
+            continue
 
-            if mesh_points.shape[0]>=2048:
-                sindices4 = farthest_point_sample_np(points=mesh_points,K=2048, random_start=True)
-            else:
-                sindices4 = np.random.randint(0, mesh_points.shape[0], 2048)
+        mask_path_ = file_list[di].replace(".obj", ".json")
+        gtlabel, gt_instances, thids, label32 = read_teeth_mask(mask_path_)
 
-            if mesh_points.shape[0]>=4096:
-                sindices5 = farthest_point_sample_np(points=mesh_points,K=4096, random_start=True)
-            else:
-                sindices5 = np.random.randint(0, mesh_points.shape[0], 4096)
+        mesh = trimesh.load(file_list[di])
+        vertics = mesh.vertices
+        image, dept_img, conv_coords, row_verts, faces, row_points= get_data_to_mesh(file_list[di], [imgsz, imgsz])
+        image = (image / np.max(image)).astype(np.float32)
 
-            file_data[key]["farthestindex"] = [sindices1, sindices2, sindices3,  sindices4, sindices5]
+        im = torch.tensor(image).permute(2, 0, 1).unsqueeze(0).cuda().float()
 
-        save_path = save_root + data_name + "_fa.npy"
-        np.save(save_path, file_data)
-        print(i,  "     ", file_path)
+        with torch.no_grad():
+
+            nb, _, height, width = im.shape  # batch size, channels, height, width
+            # Inference
+            preds = model(im)
+            preds = non_max_suppression(preds, conf_thres, iou_thres, labels=[], multi_label=True, agnostic=single_cls,max_det=max_det)[0]
+            bbox = preds[..., :4].clone()
+            cls_score = preds[..., 4].clone()
+            nms_index = nms(bbox, cls_score, iou_threshold=0.45)
+            preds = preds[nms_index].detach().cpu().numpy()
+            pcoords = np.concatenate([preds[..., :4], preds[..., -1:]+1],axis=-1)
+            #pcoords = toothNumberingCorrection(pcoords)
+            # pcoords --->mapping point clound
+            # import cv2
+            # for pi in range(pcoords.shape[0]):
+            #     coord = pcoords[pi].astype(np.int32)
+            #     image = cv2.drawMarker(image, ((coord[0]+ coord[2])//2, (coord[1]+ coord[3])//2), color_dict[int(coord[-1])], cv2.MARKER_DIAMOND, thickness=3)
+            #     #image = cv2.rectangle(image, (coord[0], coord[1]),(coord[2], coord[3]),  color_dict[int(coord[-1])], cv2.MARKER_DIAMOND, -1)
+            #     image = cv2.putText(image, str(coord[-1]), ((coord[0]+ coord[2])//2, (coord[1]+ coord[3])//2), cv2.FONT_HERSHEY_SIMPLEX, 1,
+            #                         (255, 0, 0), 2)
+            # # for pi in range(gbox.shape[0]):
+            # #     coord = gbox[pi].astype(np.int32)
+            # #     image = cv2.circle(image, (coord[1], coord[2]), 3, (255, 0, 255), cv2.MARKER_DIAMOND, -1)
+            # cv2.imwrite("../outputs/row_ing_detec_post.png", image*255)
+            # cv2.namedWindow("img", cv2.WINDOW_NORMAL)
+            # cv2.imshow("img", image)
+            # cv2.waitKey(0)
+        gtkey_points =None
+        if data_name in mesh_dict:
+            gtkey_points = read_landmarks(mesh_dict[data_name])
+        #print(gtkey_points)
+        #visualize_teeth_with_keypoints(mesh, label32, gtkey_points)
+
+        teeth_points, teeth_indexes, teeth_colors, sort_tooth_dict, gtkey_points = mapping_point_clound_ellipse(pcoords, conv_coords, vertics, faces, label32, gtkey_points)
+
+        for ti, tid in enumerate(sort_tooth_dict):
+            points = sort_tooth_dict[tid][0]
+            colors = sort_tooth_dict[tid][1]
+            file_ = open("../outputs/tooth_"+ str(tid) + ".txt", "w")
+            for point, colorv in zip(points, colors):
+                file_.write(str(point[0]) + " " + str(point[1]) + " " + str(point[2]) +str(colorv[0]) + " " + str(colorv[1]) + " " + str(colorv[2]) + "\n" )
+            file_.close()
+
+        tooth_key = None
+        if data_name in mesh_dict:
+            sort_tooth_tid = np.array(list(sort_tooth_dict.keys())).astype(np.int32)
+            all_tooth_points = {}
+            for ti, tid in enumerate(sort_tooth_dict):
+                points = sort_tooth_dict[tid][0]
+                vl = points[:, :3][points[:, 3] >=1]
+                se_index = np.random.randint(0, vl.shape[0], 1024)
+                all_tooth_points[tid] = vl[se_index]
+
+            sort_all_tooth_points = np.array([all_tooth_points[tid] for tid in sort_tooth_tid])
+
+
+            tooth_key = {tid: {} for tid in sort_tooth_tid}
+            tooth_key_point = {tid: [] for tid in sort_tooth_tid}
+            for i, key_clss in enumerate(gtkey_points):
+                gt_kp = np.array(gtkey_points[key_clss])
+                #gt_kps = [{"coord":gt_kp[i],"class":key_clss}   for i in range(gt_kp.shape[0])]
+                #view_row_key_point(mesh, gt_kps)
+
+                if key_clss in ['Mesial', 'Distal', 'InnerPoint', 'OuterPoint', 'FacialPoint']:
+                    # dist_cost = cdist(gt_kp, sort_tooth_cp, metric='euclidean')
+                    dist_cost = compute_distance_matrix_numpy(sort_all_tooth_points, gt_kp)
+                    # 2. 求解二分图最优匹配 (线性分配问题)
+                    row_ind, col_ind = linear_sum_assignment(dist_cost)
+                    min_dist = dist_cost[row_ind, col_ind]
+                    mask = min_dist < 1
+                    row_ind, col_ind = row_ind[mask], col_ind[mask]
+
+                    for t_i in range(col_ind.shape[0]):
+                        tid = sort_tooth_tid[row_ind[t_i]]
+                        tooth_key[tid][key_clss] = gt_kp[col_ind[t_i]].tolist()
+                        tooth_key_point[tid].append(gt_kp[col_ind[t_i]])
+
+            gt_kp = np.array(gtkey_points["Cusp"])
+
+            if len(gt_kp) > 0:
+                dist_cost_mask = cdist(gt_kp, sort_all_tooth_points.reshape(-1, 3), metric='euclidean')
+                min_dist_cost_mask = np.min(dist_cost_mask, axis=1)
+                min_dist_cost_mask = min_dist_cost_mask <= 1  # 大于1mm所有cusp点不属于任何牙齿
+                gt_kp = gt_kp[min_dist_cost_mask]
+
+                minv_dist = []
+                for i in range(sort_all_tooth_points.shape[0]):
+                    tooth_point = sort_all_tooth_points[i]
+                    if len(tooth_point) < 1:
+                        tooth_point = np.array([[10000, 100000, 10000]])
+                    dist_cost = cdist(gt_kp, tooth_point, metric='euclidean')
+
+                    min_v = np.min(dist_cost, axis=1)
+                    minv_dist.append(min_v)
+                minv_dist = np.array(minv_dist)
+                min_idx = np.argmin(minv_dist, axis=0)
+                min_idx_v = np.min(minv_dist, axis=0)
+                min_idx = min_idx[min_idx_v < 1]
+
+                tid_cusp = set(sort_tooth_tid[min_idx].tolist())
+
+                tid_cusp_kpoint = {tid: [] for tid in tid_cusp}
+                for i in range(min_idx.shape[0]):
+                    tid = sort_tooth_tid[min_idx[i]]
+                    tid_cusp_kpoint[tid].append(gt_kp[i].tolist())
+
+                for i, tid in enumerate(tid_cusp_kpoint):
+                    cusp_kp = tid_cusp_kpoint[tid]
+                    tooth_key[tid]["Cusp"] = cusp_kp
+
+
+
+        for ti, tid in enumerate(sort_tooth_dict):
+            points = sort_tooth_dict[tid][0]
+            key_point = {}
+
+            if None != tooth_key:
+                nums = 0
+                feat_data = tooth_key[tid]
+                for i, key_lass in enumerate(feat_data):
+                    kp = np.array(feat_data[key_lass]).reshape(-1, 3)
+                    for ki in range(kp.shape[0]):
+                        key_point[nums] = [key_lass, kp[ki]]
+                        nums = nums + 1
+            print(key_point)
+            sort_tooth_dict[tid] = {"key_point":key_point, "points":points}
+        #np.save(save_rooth + data_name + "_cv1.npy", sort_tooth_dict)
+
+        print("over")
+
+
+def test_data(
+    conf_thres=0.3,  # confidence threshold
+
+    iou_thres=0.6,  # NMS IoU threshold
+    max_det=300,  # maximum detections per image
+    single_cls=False,  # treat as single-class dataset
+):
+
+    keypoint_path = 'G:/teethMICCAI2022/3DTeethLand_landmarks_test/'
+    keyp_list =[]
+    FileErgodic(keypoint_path, keyp_list, ".json")
+    mesh_dict = {}
+    for mesh_file in keyp_list:
+        mesh_name = os.path.basename(mesh_file).replace("__kpt.json", "")
+        mesh_dict[mesh_name] = mesh_file
+
+
+    file_path = "H:/teethMICCAI2022/raw_data/test/"
+    file_list = []
+    FileErgodic(file_path, file_list, ".obj")
+
+    # Load model
+    model = torch.jit.load('../save_model/best.torchscript').cuda().eval()
+
+    imgsz = 512
+    # Configure
+    model.eval()
+    model3D = torch.jit.load('../save_model/tooth3D.pt')
+    model3D.cuda().eval()
+
+    save_rooth = "H:/teethMICCAI2022/seg_landmarks_train_data/test/"
+    Toothmask= np.zeros((len(file_list), 9))
+
+
+    for di in range(0, len(file_list)):
+        #file_list[di] = "H:/teethMICCAI2022/raw_data/train/data_part_3/lower/01A6HAN6/01A6HAN6_lower.obj"
+        tic = time.time()
+
+        gt_label_dict, pred_label_dict = {}, {}
+        print(di, "   ", file_list[di])
+        data_name = os.path.split(file_list[di])[-1].replace(".obj", "")
+
+
+        mesh = trimesh.load(file_list[di])
+        vertics = mesh.vertices
+        image, dept_img, conv_coords, row_verts, faces, row_points= get_data_to_mesh(file_list[di], [imgsz, imgsz])
+        image = (image / np.max(image)).astype(np.float32)
+
+        im = torch.tensor(image).permute(2, 0, 1).unsqueeze(0).cuda().float()
+
+        with torch.no_grad():
+
+            nb, _, height, width = im.shape  # batch size, channels, height, width
+            # Inference
+            preds = model(im)
+            preds = non_max_suppression(preds, conf_thres, iou_thres, labels=[], multi_label=True, agnostic=single_cls,max_det=max_det)[0]
+            bbox = preds[..., :4].clone()
+            cls_score = preds[..., 4].clone()
+            nms_index = nms(bbox, cls_score, iou_threshold=0.45)
+            preds = preds[nms_index].detach().cpu().numpy()
+            pcoords = np.concatenate([preds[..., :4], preds[..., -1:]+1],axis=-1)
+
+            ##Tooth Numbering Correction
+            pcoords = toothNumberingCorrection(pcoords)
+            # pcoords --->mapping point clound
+            # import cv2
+            # for pi in range(pcoords.shape[0]):
+            #     coord = pcoords[pi].astype(np.int32)
+            #     image = cv2.drawMarker(image, ((coord[0]+ coord[2])//2, (coord[1]+ coord[3])//2), (255, 0, 255), cv2.MARKER_DIAMOND, thickness=3)
+            #     image = cv2.rectangle(image, (coord[0], coord[1]),(coord[2], coord[3]),  color_dict[int(coord[-1])], cv2.MARKER_DIAMOND, -1)
+            #     image = cv2.putText(image, str(coord[-1]), ((coord[0]+ coord[2])//2, (coord[1]+ coord[3])//2), cv2.FONT_HERSHEY_SIMPLEX, 1,
+            #                         (255, 0, 0), 2)
+            # # for pi in range(gbox.shape[0]):
+            # #     coord = gbox[pi].astype(np.int32)
+            # #     image = cv2.circle(image, (coord[1], coord[2]), 3, (255, 0, 255), cv2.MARKER_DIAMOND, -1)
+            # cv2.namedWindow("img", cv2.WINDOW_NORMAL)
+            # cv2.imshow("img", image)
+            # cv2.waitKey(0)
+
+
+
+        teeth_points, sort_tooth_dict = test_mapping_point_clound_ellipse(pcoords, conv_coords, vertics, faces)
+        # save_path = "../outputs/" + str(data_name) + "/"
+        # if not os.path.exists(save_path):
+        #     os.makedirs(save_path)
+
+        # for ti, tid in enumerate(sort_tooth_dict):
+        #     points = sort_tooth_dict[tid][0]
+        #     file_ = open(save_path + "/tooth_"+ str(tid) + ".txt", "w")
+        #     colorv = color_dict[tid]
+        #     for point in points:
+        #         file_.write(str(point[0]) + " " + str(point[1]) + " " + str(point[2]) +str(colorv[0]) + " " + str(colorv[1]) + " " + str(colorv[2]) + "\n" )
+        #     file_.close()
+
+        tooth_key = None
+        if data_name in mesh_dict:
+            feat_data = read_landmarks(mesh_dict[data_name])
+
+            nums = 0
+            tooth_key = {}
+            for i, key_lass in enumerate(feat_data):
+                kp = np.array(feat_data[key_lass]).reshape(-1, 3)
+                for ki in range(kp.shape[0]):
+                    tooth_key[nums] = [key_lass, kp[ki]]
+                    nums = nums + 1
+
+
+        for ti, tid in enumerate(sort_tooth_dict):
+            points = sort_tooth_dict[tid][0]
+            key_point = {}
+
+            if None != tooth_key:
+                key_point = tooth_key
+
+            sort_tooth_dict[tid] = {"key_point":key_point, "points":points}
+        np.save(save_rooth + data_name + "_cv.npy", sort_tooth_dict)
+
+        print("over")
+
 
 if __name__ == "__main__":
+    train_data()
 
-    #data_process()
-    #toothMICCAI2022Data()
-    #rand_select_train_data()
-
-    #farthestPointSampling()
-
-
-    print("")
-    # all_files =[]
-    # file_path = "F:/teethMICCAI2022/3DTeethLand_landmarks_train/"
-    # get_files(file_path, all_files, "__kpt.json")
-    #
-    # file_path ="E:/DataSet/mesh_tooth_landmark_data/seg_landmarks_train_data/train/"
-    # file_list = []
-    # get_files(file_path, file_list, ".npy")
-    # import shutil
-    # for i in range(len(all_files)):
-    #     data_name = os.path.basename(all_files[i]).replace("__kpt.json", "_cv1.npy")
-    #     src_path = "E:/DataSet/mesh_tooth_landmark_data/seg_landmarks_train_data/train/"
-    #     dst_path = "E:/DataSet/mesh_tooth_landmark_data/seg_landmarks_train_data/seg_land/"
-    #
-    #     shutil.copy(src_path + data_name, dst_path+data_name)
-
+    #test_data()
