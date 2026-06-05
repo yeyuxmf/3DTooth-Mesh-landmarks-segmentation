@@ -5,7 +5,7 @@ Tooth Segmentation and Landmark Localization in 3D Dental Mesh，Pytorch
 2. "The second category directly performs global tooth landmark localization on the dental data, achieving end-to-end predictions without relying on any prior segmentation or detection stages."
 
 
-#Dataset  3DTeethSeg22 and Teeth3DS
+# Dataset  3DTeethSeg22 and Teeth3DS
 
 1. Large-Scale Segmentation Benchmark: Following the official split protocol of 3DTeethSeg'22 [37], the 1,800 cases are divided into 1,200 training samples and 600 independent test samples. This split is employed to validate the model's performance on the standard tooth segmentation task.
 
