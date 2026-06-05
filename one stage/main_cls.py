@@ -95,7 +95,7 @@ def train(args, io):
     model = ToothLandmark()#
     # model_ema = model
     model_path = "./save_model/seg_land_model_cls_best.pth"
-    model_initial(model, model_path)
+    # model_initial(model, model_path)
 
 
     # input_data1 = torch.rand((1, 16, 512, 3)).cuda().float()
@@ -144,62 +144,62 @@ def train(args, io):
         tic = time.time()
         nums =0
         land_nums = 0
-        # for batch_data, heat_map, offest_map, gtcls, mask in train_loader:
-        #     #label_landmarks = add_gaussian_noise(label_landmarks)
-        #
-        #     nums = nums +1
-        #     batch_data = batch_data.cuda().float()
-        #     heat_map = heat_map.cuda().float()
-        #     offest_map = offest_map.cuda().float()
-        #     gtcls = gtcls.cuda().float()
-        #     mask = mask.cuda().bool()
-        #
-        #     optimizer.zero_grad()
-        #     with autocast():
-        #         #batch_data = add_gaussion_noise(batch_data)
-        #         preheat_map, preoff_map, cls = model(batch_data)
-        #     dice_loss_ = heatt_loss(preheat_map, heat_map, mask)
-        #     cls_loss_ = heatt_loss(cls, gtcls, gtcls.cuda().bool())
-        #     #seg_loss_ = focalLoss(preheat_map, heat_map)
-        #     #wing_Loss_ = wingLoss(preoff_map[mask], offest_map[mask])
-        #     wing_Loss_ = off_loss(preoff_map.float(), offest_map.float(), mask)
-        #     loss = dice_loss_ + wing_Loss_ + cls_loss_
-        #
-        #
-        #     scaler.scale(loss).backward()
-        #
-        #     # Unscales gradients and calls
-        #     scaler.step(optimizer)
-        #     # Updates the scale for next iteration
-        #     scaler.update()
-        #
-        #     # if model_ema is not None and epoch % 1 == 0:
-        #     #     accumulate_net(model_ema, model, 0.5 ** (8 / 10000.0))
-        #
-        #
-        #     total_loss += loss.item()
-        #     dice_loss += dice_loss_.item()
-        #     wing_Loss += wing_Loss_.item()
-        #     cls_loss += cls_loss_.item()
-        #
-        #     if nums % cfg.LOSSNUMS == 0:
-        #         toc = time.time()
-        #         total_loss = total_loss / cfg.LOSSNUMS
-        #         dice_loss = dice_loss / cfg.LOSSNUMS
-        #         wing_Loss = wing_Loss / cfg.LOSSNUMS
-        #         cls_loss = cls_loss / cfg.LOSSNUMS
-        #
-        #         print("lr = ", optimizer.param_groups[0]['lr'])
-        #
-        #
-        #         print(
-        #             'epoch %d /%d,epoch %d /%d, total_loss: %.6f, dice_loss: %.6f, wing_Loss: %.6f, cls_loss: %.6f, const time: %.6f' % (
-        #                 epoch, args.epochs, nums, inter_nums, total_loss, dice_loss, wing_Loss, cls_loss, toc - tic))
-        #         total_loss = 0
-        #         dice_loss = 0
-        #         wing_Loss = 0
-        #         cls_loss = 0
-        #         tic = time.time()
+        for batch_data, heat_map, offest_map, gtcls, mask in train_loader:
+            #label_landmarks = add_gaussian_noise(label_landmarks)
+        
+            nums = nums +1
+            batch_data = batch_data.cuda().float()
+            heat_map = heat_map.cuda().float()
+            offest_map = offest_map.cuda().float()
+            gtcls = gtcls.cuda().float()
+            mask = mask.cuda().bool()
+        
+            optimizer.zero_grad()
+            with autocast():
+                #batch_data = add_gaussion_noise(batch_data)
+                preheat_map, preoff_map, cls = model(batch_data)
+            dice_loss_ = heatt_loss(preheat_map, heat_map, mask)
+            cls_loss_ = heatt_loss(cls, gtcls, gtcls.cuda().bool())
+            #seg_loss_ = focalLoss(preheat_map, heat_map)
+            #wing_Loss_ = wingLoss(preoff_map[mask], offest_map[mask])
+            wing_Loss_ = off_loss(preoff_map.float(), offest_map.float(), mask)
+            loss = dice_loss_ + wing_Loss_ + cls_loss_
+        
+        
+            scaler.scale(loss).backward()
+        
+            # Unscales gradients and calls
+            scaler.step(optimizer)
+            # Updates the scale for next iteration
+            scaler.update()
+        
+            # if model_ema is not None and epoch % 1 == 0:
+            #     accumulate_net(model_ema, model, 0.5 ** (8 / 10000.0))
+        
+        
+            total_loss += loss.item()
+            dice_loss += dice_loss_.item()
+            wing_Loss += wing_Loss_.item()
+            cls_loss += cls_loss_.item()
+        
+            if nums % cfg.LOSSNUMS == 0:
+                toc = time.time()
+                total_loss = total_loss / cfg.LOSSNUMS
+                dice_loss = dice_loss / cfg.LOSSNUMS
+                wing_Loss = wing_Loss / cfg.LOSSNUMS
+                cls_loss = cls_loss / cfg.LOSSNUMS
+        
+                print("lr = ", optimizer.param_groups[0]['lr'])
+        
+        
+                print(
+                    'epoch %d /%d,epoch %d /%d, total_loss: %.6f, dice_loss: %.6f, wing_Loss: %.6f, cls_loss: %.6f, const time: %.6f' % (
+                        epoch, args.epochs, nums, inter_nums, total_loss, dice_loss, wing_Loss, cls_loss, toc - tic))
+                total_loss = 0
+                dice_loss = 0
+                wing_Loss = 0
+                cls_loss = 0
+                tic = time.time()
 
         if epoch+1 >=90 and 0 == (epoch+1)%1:
             model.eval()
@@ -237,11 +237,11 @@ if __name__ == "__main__":
                         help='Size of batch)')
     parser.add_argument('--test_batch_size', type=int, default=1, metavar='batch_size',
                         help='Size of batch)')
-    parser.add_argument('--epochs', type=int, default=101, metavar='N',
+    parser.add_argument('--epochs', type=int, default=301, metavar='N',
                         help='number of episode to train ')
     parser.add_argument('--use_sgd', type=bool, default=True,
                         help='Use SGD')
-    parser.add_argument('--lr', type=float, default=1.2*1e-4, metavar='LR',
+    parser.add_argument('--lr', type=float, default=1.0*1e-4, metavar='LR',
                         help='learning rate (default: 0.001, 0.1 if using sgd)')
     parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
                         help='SGD momentum (default: 0.9)')
