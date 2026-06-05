@@ -43,7 +43,16 @@ python ./main_cls.py    #A pre-trained model is obtained after training.
 
 python ./main_reg.py    #Load the pre-trained model obtained from training with main_cls.py, and then train it further to obtain the final model.
 
+Paper 3 was born because the decoding speed of Paper 2 was too slow. Additionally, I personally really dislike heatmap decoding. Paper 3 suffered from poor accuracy during training due to the conflict between heatmap-based and direct coordinate regression, so a pre-trained model was adopted before training Paper 3. I also want to solve this conflict problem but have been struggling to find a way.
+
+
 # Environment
+
+ GPU: NVIDIA RTX 3060  and NVIDIA RTX 3090 TI 
+
+ Pytorch: 2.6.0
+
+ CUDA :12.0 +
 
 # Model structure
 
