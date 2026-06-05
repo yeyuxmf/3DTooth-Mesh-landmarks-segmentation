@@ -10,7 +10,11 @@ Tooth Segmentation and Landmark Localization in 3D Dental Mesh，Pytorch
 1. Large-Scale Segmentation Benchmark: Following the official split protocol of 3DTeethSeg'22 [37], the 1,800 cases are divided into 1,200 training samples and 600 independent test samples. This split is employed to validate the model's performance on the standard tooth segmentation task.
 
 2. Fine-Grained Landmark Subset: This study further incorporates the annotation information from the 3DTeethLand [45] 2024 Challenge. This subset comprises two groups: The first group (Training Set) contains 240 scan cases derived from the Teeth3DS dataset, supplemented with six categories of landmark labels by professional dentists, serving as the training set for the landmark localization task. The second group (Hidden Private Test Set) contains 100 cases. This portion is independent of the parent dataset, and we obtained this data to test the algorithm proposed in this paper.
-   
+
+# Model 
+
+   Model architecture diagram. To be added after Papers 1–3 are accepted.
+
    
 # Train 
 two_stage: 
