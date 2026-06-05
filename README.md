@@ -16,6 +16,7 @@ Tooth Segmentation and Landmark Localization in 3D Dental Mesh，Pytorch
 two_stage: 
 
 Use the trained tooth detection model to crop local regions of individual teeth from both the training and test sets, which are then fed to the tooth landmark regression model for training.
+"牙齿分割20250425.docx" This is the original manuscript for tooth detection and segmentation, which has been accepted and published.
 
 python ./data/data_processing.py  #process data:
 
