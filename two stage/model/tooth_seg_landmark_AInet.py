@@ -333,101 +333,138 @@ class ToothLandmark(nn.Module):
 
         return normalized, center.squeeze(-2), scale.squeeze(-2)
 
-    def forward(self, p_points, trans_mask):
-       
+   def forward(self, p_points, trans_mask):
+        TB, TN, N, C = p_points.shape
+        NM = N // config.Tpoints
 
-        # 返回原始格式
+        # 数据准备
+        input_pos = p_points[..., :3].clone()
+        trans_mask = trans_mask > 0
+
+        # 中心化处理
+        cp = torch.mean(p_points[..., :3], dim=-2)
+        if self.training:
+            noise = (torch.randn(TB * 1, TN, 3).cuda().float() * 1.0)
+            cp = cp + noise
+
+        p_points_centered = p_points[..., :3] - cp.unsqueeze(dim=-2)
+
+        # Encoder Forward
+        points = self.linear1(p_points_centered)
+        cpoints = self.linear2(cp)
+
+        points = points.reshape(TB * TN, N, -1)  # Flatten
+        points = points.reshape(TB * TN *NM, N//NM, -1)  # Flatten
+
+        teeths = []
+        for blk in self.Tsencoders:
+            points = blk(points)
+            teeths.append(points)
+
+
+        for blk in self.Tcencoders:
+            cpoints = blk(cpoints, trans_mask)
+
+        x = teeths[-1]  # (TB*TN, N, embed_dim)
+        x = self.linearB(x)
+
+        condtion = cpoints.reshape(TB * TN, -1).unsqueeze(dim=1).repeat(NM, 1, 1)
+
+        xxin = []
+        for blk in self.trans_:
+            x = blk(x, condtion)
+            xxin.append(x)
+
+        # Heatmap Branch
+        heatMap = self.heat_out(xxin[-1].reshape(TB * TN, N, -1))
+        heat_out = heatMap.reshape(TB, TN, N, 1).sigmoid()
+
+        # Feature Construction for Stage 1
+        linearh = self.linearh(heatMap)
+        x_combined = torch.cat([linearh, torch.cat(xxin[-1:], dim=-1).reshape(TB * TN, N, -1)], dim=-1)
+
+        # Point-wise features (TB*TN, N, embed_dim)
+        s1_point_features = self.s1_refinement(x_combined)
+
+        # =======================================================
+        # [NEW] Segmentation & Feature Gating
+        # =======================================================
+        # 1. 预测分割 logits (TB*TN, N, 1)
+        seg_logits = self.seg_head(s1_point_features)
+
+        # 2. 计算概率 (用于 Gating)
+        seg_score = torch.sigmoid(seg_logits)
+
+
+        s1_point_features_gated = s1_point_features
+
+        # =======================================================
+
+        x_global = torch.max(s1_point_features_gated, dim=1)[0]
+        x_global = self.linearMap1(x_global)
+
+        # Coarse Prediction
+        predlandmarks = self.predlandmarks(x_global).reshape(TB, TN, self.fm_tnums, -1)
+
+        # 恢复绝对坐标
+        predlandmarks_abs = predlandmarks.clone()
+        predlandmarks_abs[..., :3] = predlandmarks[..., :3] + cp.unsqueeze(dim=-2)
+
+        fixedlandmarks = predlandmarks_abs[..., :config.fxid_tnums, :].reshape(TB, TN, -1)
+        matchLandmarks = predlandmarks_abs[..., config.fxid_tnums:, :].reshape(TB, TN, -1)
+
+        # =========================================================
+        # Stage 2: Local Refinement (Improved with Gated Features)
+        # =========================================================
+
+        # 1. 准备 Query 坐标 (Detach)
+        init_coords = predlandmarks_abs[..., :3].reshape(TB * TN, self.fm_tnums, 3).detach()
+        input_pos_flat = input_pos.reshape(TB * TN, N, 3)
+
+        # 2. KNN 搜索
+        idx = knn_cross(init_coords, input_pos_flat, k=self.knn_nums)
+
+        # 3. 几何特征聚合
+        # 注意：这里传入的是 s1_point_features_gated
+        # 这样 Stage 2 在聚合局部特征时，会“看到”被分割掩码强化过的牙齿特征
+        land_fea = get_local_feature_with_geometry(
+            init_coords,
+            input_pos_flat,
+            s1_point_features_gated,
+            idx,
+            self.mlpurr,
+            self.rel_pos_encoder
+        )
+
+        # 4. 降维适应 Transformer
+        land_fea = self.lineargh(land_fea)  # (TB*TN, M, embed_dim)
+
+        # 6. Refine Transformers
+        land_fea = land_fea.reshape(TB * TN * self.fm_tnums, self.knn_nums, -1)
+        for blk in self.landencoder1:
+            land_fea = blk(land_fea)
+
+        land_fea = land_fea.reshape(TB * TN, self.fm_tnums, self.knn_nums, -1).max(dim=-2)[0]
+        land_fea = self.lineargdh(land_fea)
+
+
+        fland_fea = land_fea[:, :config.fxid_tnums, :]
+        mland_fea = land_fea[:, config.fxid_tnums:, :]
+
+        # 7. Predict Offset
+        land_offsets = self.outLandmarks(fland_fea, mland_fea)
+
+        # 8. Final Coordinates
+        land_offsets[..., :3] = land_offsets[..., :3] + init_coords.reshape(TB * TN, self.fm_tnums, 3)
+
+        final_coords = land_offsets.reshape(TB, TN, self.fm_tnums, -1)
+
+        flandmarks_refine = final_coords[..., :config.fxid_tnums, :].reshape(TB, TN, -1)
+        mLandmarks_refine = final_coords[..., config.fxid_tnums:, :].reshape(TB, TN, -1)
+
+
+        # 恢复 Seg Logits 形状以便 Loss 计算 (TB, TN, N, 1)
+        seg_score = seg_score.reshape(TB, TN, N, 1)
+
+        # 返回: (S1_Fixed, S1_Match, Heatmap, S2_Fixed, S2_Match, Center, S1_Coords, [NEW]Seg_Logits)
         return fixedlandmarks, matchLandmarks, heat_out, flandmarks_refine, mLandmarks_refine, seg_score
-
-    # ======================== 新增：训练/验证工具函数 ========================
-    def train_step(self, optimizer, p_points, trans_mask, targets):
-        """单步训练（带梯度裁剪）"""
-        self.train()
-        optimizer.zero_grad()
-
-        # 前向传播
-        outputs = self(p_points, trans_mask)
-        fixed_refine, match_refine, heat_out, seg_score = outputs[3], outputs[4], outputs[2], outputs[5]
-
-        # 计算损失
-        loss_fixed = self.fixed_loss(fixed_refine, targets['fixed'])
-        loss_match = self.match_loss(match_refine, targets['match'])
-        loss_seg = F.binary_cross_entropy(seg_score, targets['seg_mask'])
-        loss_heatmap = F.binary_cross_entropy(heat_out, targets['heatmap'])
-
-        total_loss = loss_fixed + loss_match + 0.1 * loss_seg + 0.01 * loss_heatmap
-
-        # 反向传播 + 梯度裁剪（防止梯度爆炸）
-        total_loss.backward()
-        grad_clip_norm = config.grad_clip_norm if hasattr(config, 'grad_clip_norm') else 1.0
-        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=grad_clip_norm)
-        optimizer.step()
-
-        return {
-            'total_loss': total_loss.item(),
-            'loss_fixed': loss_fixed.item(),
-            'loss_match': loss_match.item(),
-            'loss_seg': loss_seg.item(),
-            'loss_heatmap': loss_heatmap.item()
-        }
-
-    @torch.no_grad()
-    def validate(self, p_points, trans_mask, targets):
-        """验证步骤（无梯度）"""
-        self.eval()
-        outputs = self(p_points, trans_mask)
-        fixed_refine, match_refine = outputs[3], outputs[4]
-
-        # 计算损失和指标
-        loss_fixed = self.fixed_loss(fixed_refine, targets['fixed'])
-        loss_match = self.match_loss(match_refine, targets['match'])
-        fixed_error = torch.mean(torch.norm(fixed_refine - targets['fixed'], dim=-1))
-        match_error = torch.mean(torch.norm(match_refine - targets['match'], dim=-1))
-
-        return {
-            'loss_fixed': loss_fixed.item(),
-            'loss_match': loss_match.item(),
-            'fixed_error': fixed_error.item(),
-            'match_error': match_error.item()
-        }
-
-    def save_checkpoint(self, path: str, epoch: int, optimizer=None):
-        """保存模型检查点"""
-        checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': self.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict() if optimizer else None
-        }
-        torch.save(checkpoint, path)
-
-    def load_checkpoint(self, path: str, optimizer=None):
-        """加载模型检查点"""
-        checkpoint = torch.load(path, map_location=self.device)
-        self.load_state_dict(checkpoint['model_state_dict'])
-        if optimizer and checkpoint.get('optimizer_state_dict'):
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        return checkpoint['epoch']
-
-
-# ======================== 测试代码（可选） ========================
-if __name__ == "__main__":
-    # 初始化模型
-    model = ToothLandmark()
-    model.to(model.device)
-    model.initialize_weights()
-
-    # 构造测试数据
-    TB, TN, N, C = 2, config.tooth_nums, config.sam_points, 3
-    p_points = torch.randn(TB, TN, N, C).to(model.device)
-    trans_mask = torch.randn(TB, TN, TN).to(model.device)
-
-    # 测试前向传播
-    with torch.no_grad():
-        outputs = model(p_points, trans_mask)
-        print("模型输出维度：")
-        print(f"fixedlandmarks: {outputs[0].shape}")
-        print(f"matchLandmarks: {outputs[1].shape}")
-        print(f"heat_out: {outputs[2].shape}")
-        print(f"flandmarks_refine: {outputs[3].shape}")
-        print(f"mLandmarks_refine: {outputs[4].shape}")
-        print(f"seg_score: {outputs[5].shape}")
